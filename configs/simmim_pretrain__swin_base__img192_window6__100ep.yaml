@@ -14,10 +14,10 @@ DATA:
 TRAIN:
   EPOCHS: 100
   WARMUP_EPOCHS: 10
-  BASE_LR: 2e-4
+  BASE_LR: 5e-5
   WARMUP_LR: 1e-6
-  MIN_LR: 1e-5
+  MIN_LR: 2.5e-6
   WEIGHT_DECAY: 0.05
 PRINT_FREQ: 100
-SAVE_FREQ: 5
+SAVE_FREQ: 20
 TAG: simmim_pretrain__swin_base__img192_window6__100ep

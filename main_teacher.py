@@ -3,25 +3,34 @@
 # https://github.com/microsoft/SimMIM
 # --------------------------------------------------------
 
-import os
-import time
 import argparse
 import datetime
-import numpy as np
+import os
+import socket
+import subprocess
+import time
 
+import numpy as np
 import torch
 import torch.backends.cudnn as cudnn
 import torch.distributed as dist
 from timm.utils import AverageMeter
 
 from config import get_config
+from data import build_loader
+from logger import create_logger
+from lr_scheduler import build_scheduler
+
 # from models import build_model
 from models.teacher import build_simmim
-from data import build_loader
-from lr_scheduler import build_scheduler
 from optimizer import build_optimizer
-from logger import create_logger
-from utils import load_checkpoint, save_checkpoint, get_grad_norm, auto_resume_helper
+from utils import (
+    _find_free_port,
+    auto_resume_helper,
+    get_grad_norm,
+    load_checkpoint,
+    save_checkpoint,
+)
 
 try:
     # noinspection PyUnresolvedReferences
@@ -31,32 +40,49 @@ except ImportError:
 
 
 def parse_option():
-    parser = argparse.ArgumentParser('SimMIM pre-training script', add_help=False)
-    parser.add_argument('--cfg', type=str, required=True, metavar="FILE", help='path to config file', )
+    parser = argparse.ArgumentParser("SimMIM pre-training script", add_help=False)
+    parser.add_argument(
+        "--cfg",
+        type=str,
+        required=True,
+        metavar="FILE",
+        help="path to config file",
+    )
     parser.add_argument(
         "--opts",
         help="Modify config options by adding 'KEY VALUE' pairs. ",
         default=None,
-        nargs='+',
+        nargs="+",
     )
 
     # easy config modification
-    parser.add_argument('--batch-size', type=int, help="batch size for single GPU")
-    parser.add_argument('--data-path', type=str, help='path to dataset')
-    parser.add_argument('--pretrained', type=str, help='path to pre-trained model')
-    parser.add_argument('--resume', help='resume from checkpoint')
-    parser.add_argument('--accumulation-steps', type=int, help="gradient accumulation steps")
-    parser.add_argument('--use-checkpoint', action='store_true',
-                        help="whether to use gradient checkpointing to save memory")
-    parser.add_argument('--amp-opt-level', type=str, default='O1', choices=['O0', 'O1', 'O2'],
-                        help='mixed precision opt level, if O0, no amp is used')
-    parser.add_argument('--output', default='output', type=str, metavar='PATH',
-                        help='root of output folder, the full path is <output>/<model_name>/<tag> (default: output)')
-    parser.add_argument('--tag', help='tag of experiment')
-    parser.add_argument('--alpha', type=float, default=1.0, help="Alpha for similarity loss")
-
-    # distributed training
-    parser.add_argument("--local_rank", type=int, required=True, help='local rank for DistributedDataParallel')
+    parser.add_argument("--batch-size", type=int, help="batch size for single GPU")
+    parser.add_argument("--data-path", type=str, help="path to dataset")
+    parser.add_argument("--pretrained", type=str, help="path to pre-trained model")
+    parser.add_argument("--resume", help="resume from checkpoint")
+    parser.add_argument("--accumulation-steps", type=int, help="gradient accumulation steps")
+    parser.add_argument(
+        "--use-checkpoint",
+        action="store_true",
+        help="whether to use gradient checkpointing to save memory",
+    )
+    parser.add_argument(
+        "--amp-opt-level",
+        type=str,
+        default="O1",
+        choices=["O0", "O1", "O2"],
+        help="mixed precision opt level, if O0, no amp is used",
+    )
+    parser.add_argument(
+        "--output",
+        default="output",
+        type=str,
+        metavar="PATH",
+        help="root of output folder, the full path is <output>/<model_name>/<tag> (default: output)",
+    )
+    parser.add_argument("--tag", help="tag of experiment")
+    parser.add_argument("--alpha", type=float, default=1.0, help="Alpha for similarity loss")
+    parser.add_argument("--launcher", type=str, default="slurm", help="The job launcer")
 
     args = parser.parse_args()
 
@@ -76,12 +102,14 @@ def main(config):
     optimizer = build_optimizer(config, model, logger, is_pretrain=True)
     if config.AMP_OPT_LEVEL != "O0":
         model, optimizer = amp.initialize(model, optimizer, opt_level=config.AMP_OPT_LEVEL)
-    model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[config.LOCAL_RANK], broadcast_buffers=False)
+    model = torch.nn.parallel.DistributedDataParallel(
+        model, broadcast_buffers=False, find_unused_parameters=True
+    )
     model_without_ddp = model.module
 
     n_parameters = sum(p.numel() for p in model.parameters() if p.requires_grad)
     logger.info(f"number of params: {n_parameters}")
-    if hasattr(model_without_ddp, 'flops'):
+    if hasattr(model_without_ddp, "flops"):
         flops = model_without_ddp.flops()
         logger.info(f"number of GFLOPs: {flops / 1e9}")
 
@@ -91,13 +119,15 @@ def main(config):
         resume_file = auto_resume_helper(config.OUTPUT, logger)
         if resume_file:
             if config.MODEL.RESUME:
-                logger.warning(f"auto-resume changing resume file from {config.MODEL.RESUME} to {resume_file}")
+                logger.warning(
+                    f"auto-resume changing resume file from {config.MODEL.RESUME} to {resume_file}"
+                )
             config.defrost()
             config.MODEL.RESUME = resume_file
             config.freeze()
-            logger.info(f'auto resuming from {resume_file}')
+            logger.info(f"auto resuming from {resume_file}")
         else:
-            logger.info(f'no checkpoint found in {config.OUTPUT}, ignoring auto resume')
+            logger.info(f"no checkpoint found in {config.OUTPUT}, ignoring auto resume")
 
     if config.MODEL.RESUME:
         load_checkpoint(config, model_without_ddp, optimizer, lr_scheduler, logger)
@@ -108,12 +138,14 @@ def main(config):
         data_loader_train.sampler.set_epoch(epoch)
 
         train_one_epoch(config, model, data_loader_train, optimizer, epoch, lr_scheduler)
-        if dist.get_rank() == 0 and (epoch % config.SAVE_FREQ == 0 or epoch == (config.TRAIN.EPOCHS - 1)):
-            save_checkpoint(config, epoch, model_without_ddp, 0., optimizer, lr_scheduler, logger)
+        if dist.get_rank() == 0 and (
+            epoch % config.SAVE_FREQ == 0 or epoch == (config.TRAIN.EPOCHS - 1)
+        ):
+            save_checkpoint(config, epoch, model_without_ddp, 0.0, optimizer, lr_scheduler, logger)
 
     total_time = time.time() - start_time
     total_time_str = str(datetime.timedelta(seconds=int(total_time)))
-    logger.info('Training time {}'.format(total_time_str))
+    logger.info("Training time {}".format(total_time_str))
 
 
 def train_one_epoch(config, model, data_loader, optimizer, epoch, lr_scheduler):
@@ -139,13 +171,17 @@ def train_one_epoch(config, model, data_loader, optimizer, epoch, lr_scheduler):
                 with amp.scale_loss(loss, optimizer) as scaled_loss:
                     scaled_loss.backward()
                 if config.TRAIN.CLIP_GRAD:
-                    grad_norm = torch.nn.utils.clip_grad_norm_(amp.master_params(optimizer), config.TRAIN.CLIP_GRAD)
+                    grad_norm = torch.nn.utils.clip_grad_norm_(
+                        amp.master_params(optimizer), config.TRAIN.CLIP_GRAD
+                    )
                 else:
                     grad_norm = get_grad_norm(amp.master_params(optimizer))
             else:
                 loss.backward()
                 if config.TRAIN.CLIP_GRAD:
-                    grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), config.TRAIN.CLIP_GRAD)
+                    grad_norm = torch.nn.utils.clip_grad_norm_(
+                        model.parameters(), config.TRAIN.CLIP_GRAD
+                    )
                 else:
                     grad_norm = get_grad_norm(model.parameters())
             if (idx + 1) % config.TRAIN.ACCUMULATION_STEPS == 0:
@@ -158,13 +194,17 @@ def train_one_epoch(config, model, data_loader, optimizer, epoch, lr_scheduler):
                 with amp.scale_loss(loss, optimizer) as scaled_loss:
                     scaled_loss.backward()
                 if config.TRAIN.CLIP_GRAD:
-                    grad_norm = torch.nn.utils.clip_grad_norm_(amp.master_params(optimizer), config.TRAIN.CLIP_GRAD)
+                    grad_norm = torch.nn.utils.clip_grad_norm_(
+                        amp.master_params(optimizer), config.TRAIN.CLIP_GRAD
+                    )
                 else:
                     grad_norm = get_grad_norm(amp.master_params(optimizer))
             else:
                 loss.backward()
                 if config.TRAIN.CLIP_GRAD:
-                    grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), config.TRAIN.CLIP_GRAD)
+                    grad_norm = torch.nn.utils.clip_grad_norm_(
+                        model.parameters(), config.TRAIN.CLIP_GRAD
+                    )
                 else:
                     grad_norm = get_grad_norm(model.parameters())
             optimizer.step()
@@ -178,38 +218,99 @@ def train_one_epoch(config, model, data_loader, optimizer, epoch, lr_scheduler):
         end = time.time()
 
         if idx % config.PRINT_FREQ == 0:
-            lr = optimizer.param_groups[0]['lr']
+            lr = optimizer.param_groups[0]["lr"]
             memory_used = torch.cuda.max_memory_allocated() / (1024.0 * 1024.0)
             etas = batch_time.avg * (num_steps - idx)
             logger.info(
-                f'Train: [{epoch}/{config.TRAIN.EPOCHS}][{idx}/{num_steps}]\t'
-                f'eta {datetime.timedelta(seconds=int(etas))} lr {lr:.6f}\t'
-                f'time {batch_time.val:.4f} ({batch_time.avg:.4f})\t'
-                f'loss {loss_meter.val:.4f} ({loss_meter.avg:.4f})\t'
-                f'grad_norm {norm_meter.val:.4f} ({norm_meter.avg:.4f})\t'
-                f'mem {memory_used:.0f}MB')
+                f"Train: [{epoch}/{config.TRAIN.EPOCHS}][{idx}/{num_steps}]\t"
+                f"eta {datetime.timedelta(seconds=int(etas))} lr {lr:.6f}\t"
+                f"time {batch_time.val:.4f} ({batch_time.avg:.4f})\t"
+                f"loss {loss_meter.val:.4f} ({loss_meter.avg:.4f})\t"
+                f"grad_norm {norm_meter.val:.4f} ({norm_meter.avg:.4f})\t"
+                f"mem {memory_used:.0f}MB"
+            )
     epoch_time = time.time() - start
     logger.info(f"EPOCH {epoch} training takes {datetime.timedelta(seconds=int(epoch_time))}")
 
 
-if __name__ == '__main__':
+def init_dist_slurm(backend, port=None, init_backend="torch", **kwargs) -> None:
+    """Initialize slurm distributed training environment.
+
+    If argument ``port`` is not specified, then the master port will be system
+    environment variable ``MASTER_PORT``. If ``MASTER_PORT`` is not in system
+    environment variable, then a default port ``29500`` will be used.
+
+    Args:
+        backend (str): Backend of torch.distributed.
+        port (int, optional): Master port. Defaults to None.
+    """
+    proc_id = int(os.environ["SLURM_PROCID"])
+    ntasks = int(os.environ["SLURM_NTASKS"])
+    node_list = os.environ["SLURM_NODELIST"]
+    # Not sure when this environment variable could be None, so use a fallback
+    local_rank_env = os.environ.get("SLURM_LOCALID", None)
+    if local_rank_env is not None:
+        local_rank = int(local_rank_env)
+    else:
+        num_gpus = torch.cuda.device_count()
+        local_rank = proc_id % num_gpus
+    addr = subprocess.getoutput(f"scontrol show hostname {node_list} | head -n1")
+    # specify master port
+    if port is not None:
+        os.environ["MASTER_PORT"] = str(port)
+    elif "MASTER_PORT" in os.environ:
+        pass  # use MASTER_PORT in the environment variable
+    else:
+        # 29500 is torch.distributed default port
+        os.environ["MASTER_PORT"] = "29500"
+    # use MASTER_ADDR in the environment variable if it already exists
+    if "MASTER_ADDR" not in os.environ:
+        os.environ["MASTER_ADDR"] = addr
+    os.environ["WORLD_SIZE"] = str(ntasks)
+    os.environ["LOCAL_RANK"] = str(local_rank)
+    os.environ["RANK"] = str(proc_id)
+
+    torch.cuda.set_device(local_rank)
+
+    if init_backend == "torch":
+        dist.init_process_group(backend=backend, **kwargs)
+    else:
+        raise ValueError(
+            'supported "init_backend" is "torch" or "deepspeed", ' f"but got {init_backend}"
+        )
+    dist.barrier()
+
+
+def _find_free_port() -> str:
+    # Copied from https://github.com/facebookresearch/detectron2/blob/main/detectron2/engine/launch.py # noqa: E501
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    # Binding to port 0 will cause the OS to find an available port for us
+    sock.bind(("", 0))
+    port = sock.getsockname()[1]
+    sock.close()
+    # NOTE: there is still a chance the port could be taken by other processes.
+    return port
+
+
+if __name__ == "__main__":
     _, config = parse_option()
 
     if config.AMP_OPT_LEVEL != "O0":
         assert amp is not None, "amp not installed!"
 
-    if 'RANK' in os.environ and 'WORLD_SIZE' in os.environ:
-        rank = int(os.environ["RANK"])
-        world_size = int(os.environ['WORLD_SIZE'])
-        print(f"RANK and WORLD_SIZE in environ: {rank}/{world_size}")
-    else:
-        rank = 0
-        world_size = 1
-        os.environ["MASTER_ADDR"] = "localhost"
-        os.environ["MASTER_PORT"] = "29501"
-    torch.cuda.set_device(config.LOCAL_RANK)
-    torch.distributed.init_process_group(backend='nccl', init_method='env://', world_size=world_size, rank=rank)
-    torch.distributed.barrier()
+    # find free port and save it to master_port.tmp
+    port = "12365"
+    # with open("master_port.tmp", "r+", encoding="UTF-8") as fp:
+    #     port = fp.readline().strip()
+    #     if port == "":
+    #         port = _find_free_port()
+    #         fp.write(str(port))
+    # # TODO: remove print
+    # print("*" * 100)
+    # print(port)
+
+    # currently supported launchers: slurm
+    init_dist_slurm(backend="nccl", port=port)
 
     seed = config.SEED + dist.get_rank()
     torch.manual_seed(seed)
@@ -218,8 +319,12 @@ if __name__ == '__main__':
 
     # linear scale the learning rate according to total batch size, may not be optimal
     linear_scaled_lr = config.TRAIN.BASE_LR * config.DATA.BATCH_SIZE * dist.get_world_size() / 512.0
-    linear_scaled_warmup_lr = config.TRAIN.WARMUP_LR * config.DATA.BATCH_SIZE * dist.get_world_size() / 512.0
-    linear_scaled_min_lr = config.TRAIN.MIN_LR * config.DATA.BATCH_SIZE * dist.get_world_size() / 512.0
+    linear_scaled_warmup_lr = (
+        config.TRAIN.WARMUP_LR * config.DATA.BATCH_SIZE * dist.get_world_size() / 512.0
+    )
+    linear_scaled_min_lr = (
+        config.TRAIN.MIN_LR * config.DATA.BATCH_SIZE * dist.get_world_size() / 512.0
+    )
     # gradient accumulation also need to scale the learning rate
     if config.TRAIN.ACCUMULATION_STEPS > 1:
         linear_scaled_lr = linear_scaled_lr * config.TRAIN.ACCUMULATION_STEPS
@@ -232,7 +337,9 @@ if __name__ == '__main__':
     config.freeze()
 
     os.makedirs(config.OUTPUT, exist_ok=True)
-    logger = create_logger(output_dir=config.OUTPUT, dist_rank=dist.get_rank(), name=f"{config.MODEL.NAME}")
+    logger = create_logger(
+        output_dir=config.OUTPUT, dist_rank=dist.get_rank(), name=f"{config.MODEL.NAME}"
+    )
 
     if dist.get_rank() == 0:
         path = os.path.join(config.OUTPUT, "config.json")

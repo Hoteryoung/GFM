@@ -129,7 +129,10 @@ dmypy.json
 .pyre/
 
 output/
-dataset/
+datasets/
+datasets
 visual/
 .vscode/
 wandb/
+
+

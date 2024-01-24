@@ -1,0 +1,3 @@
+batch_size 64:
+    availabe: 64
+    unavailable: 55, 102
