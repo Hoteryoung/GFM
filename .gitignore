@@ -134,5 +134,7 @@ datasets
 visual/
 .vscode/
 wandb/
+pretrained_models/
+tmp/
 
 

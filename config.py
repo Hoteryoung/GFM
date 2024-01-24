@@ -183,6 +183,8 @@ _C.PRINT_FREQ = 10
 _C.SEED = 0
 # Perform evaluation only, overwritten by command line argument
 _C.EVAL_MODE = False
+# Perform test only, overwritten by command line argument
+_C.TEST_MODE = False
 # Test throughput only, overwritten by command line argument
 _C.THROUGHPUT_MODE = False
 # local rank for DistributedDataParallel, given by command line argument
@@ -243,6 +245,8 @@ def update_config(config, args):
         config.TAG = args.tag
     if _check_args("eval"):
         config.EVAL_MODE = True
+    if _check_args("test"):
+        config.TEST_MODE = True
     if _check_args("throughput"):
         config.THROUGHPUT_MODE = True
     if _check_args("train_frac"):
@@ -253,6 +257,8 @@ def update_config(config, args):
         config.ALPHA = args.alpha
     if _check_args("launcer"):
         config.LAUNCHER = args.launcher
+    if _check_args("master_port"):
+        config.MASTER_PORT = args.master_port
 
     # set local rank for distributed training
     # config.LOCAL_RANK = args.local_rank

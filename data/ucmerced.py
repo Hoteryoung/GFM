@@ -5,16 +5,16 @@
 
 """UC Merced dataset."""
 import os
+from typing import Callable
+
 import torch
-from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple, cast
-
-from torchgeo.datasets.geo import NonGeoClassificationDataset
-from torchvision.datasets import ImageFolder
-from torchgeo.datasets.utils import check_integrity, download_url, extract_archive
-
 import torchvision.transforms as T
 from timm.data import IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD
 from timm.data.transforms import str_to_pil_interp
+from torchgeo.datasets.geo import NonGeoClassificationDataset
+from torchgeo.datasets.utils import check_integrity, download_url, extract_archive
+from torchvision.datasets import ImageFolder
+
 
 class UCMerced(NonGeoClassificationDataset):
     """UC Merced dataset.
@@ -35,7 +35,7 @@ class UCMerced(NonGeoClassificationDataset):
     * agricultural
     * airplane
     * baseballdiamond
-    * beach
+    * beach    
     * buildings
     * chaparral
     * denseresidential
@@ -105,7 +105,15 @@ class UCMerced(NonGeoClassificationDataset):
         "test": "046aff88472d8fc07c4678d03749e28d",
     }
 
-    def __init__(self, root="data", split="train", transform=None, download=False, checksum=False, image_size=256):
+    def __init__(
+        self,
+        root="data",
+        split="train",
+        transform=None,
+        download=False,
+        checksum=False,
+        image_size=256,
+    ):
         """Initialize a new UC Merced dataset instance.
 
         Args:
@@ -198,7 +206,6 @@ class UCMerced(NonGeoClassificationDataset):
         filepath = os.path.join(self.root, self.filename)
         extract_archive(filepath)
 
-
     def __getitem__(self, index: int):
         """Return an index within the dataset.
         Args:
@@ -230,30 +237,56 @@ class UCMerced(NonGeoClassificationDataset):
         """
         img, label = ImageFolder.__getitem__(self, index)
         return img, label
-    
-def build_transform(config, split='train'):
-    mixup_active = config.AUG.MIXUP > 0 or config.AUG.CUTMIX > 0 or config.AUG.CUTMIX_MINMAX is not None
-    if split=='train' and mixup_active:
-        transforms = T.Compose([
-                T.Resize((config.DATA.IMG_SIZE,config.DATA.IMG_SIZE), interpolation=str_to_pil_interp(config.DATA.INTERPOLATION)),
-                T.RandomResizedCrop(config.DATA.IMG_SIZE, scale=(0.67, 1.), ratio=(3. / 4., 4. / 3.)),
+
+
+def build_transform(config, split="train"):
+    mixup_active = (
+        config.AUG.MIXUP > 0 or config.AUG.CUTMIX > 0 or config.AUG.CUTMIX_MINMAX is not None
+    )
+    if split == "train" and mixup_active:
+        transforms = T.Compose(
+            [
+                T.Resize(
+                    (config.DATA.IMG_SIZE, config.DATA.IMG_SIZE),
+                    interpolation=str_to_pil_interp(config.DATA.INTERPOLATION),
+                ),
+                T.RandomResizedCrop(
+                    config.DATA.IMG_SIZE, scale=(0.67, 1.0), ratio=(3.0 / 4.0, 4.0 / 3.0)
+                ),
                 T.RandomHorizontalFlip(),
                 T.RandomVerticalFlip(),
                 T.ToTensor(),
-                T.Normalize(mean=torch.tensor(IMAGENET_DEFAULT_MEAN),std=torch.tensor(IMAGENET_DEFAULT_STD)),
-        ])
-    elif split=='train':
-        transforms = T.Compose([
-                T.Resize((config.DATA.IMG_SIZE,config.DATA.IMG_SIZE), interpolation=str_to_pil_interp(config.DATA.INTERPOLATION)),
+                T.Normalize(
+                    mean=torch.tensor(IMAGENET_DEFAULT_MEAN), std=torch.tensor(IMAGENET_DEFAULT_STD)
+                ),
+            ]
+        )
+    elif split == "train":
+        transforms = T.Compose(
+            [
+                T.Resize(
+                    (config.DATA.IMG_SIZE, config.DATA.IMG_SIZE),
+                    interpolation=str_to_pil_interp(config.DATA.INTERPOLATION),
+                ),
                 T.RandomHorizontalFlip(),
                 T.RandomVerticalFlip(),
                 T.ToTensor(),
-                T.Normalize(mean=torch.tensor(IMAGENET_DEFAULT_MEAN),std=torch.tensor(IMAGENET_DEFAULT_STD)),
-        ])
+                T.Normalize(
+                    mean=torch.tensor(IMAGENET_DEFAULT_MEAN), std=torch.tensor(IMAGENET_DEFAULT_STD)
+                ),
+            ]
+        )
     else:
-        transforms = T.Compose([
-                T.Resize((config.DATA.IMG_SIZE,config.DATA.IMG_SIZE), interpolation=str_to_pil_interp(config.DATA.INTERPOLATION)),
+        transforms = T.Compose(
+            [
+                T.Resize(
+                    (config.DATA.IMG_SIZE, config.DATA.IMG_SIZE),
+                    interpolation=str_to_pil_interp(config.DATA.INTERPOLATION),
+                ),
                 T.ToTensor(),
-                T.Normalize(mean=torch.tensor(IMAGENET_DEFAULT_MEAN),std=torch.tensor(IMAGENET_DEFAULT_STD)),
-        ])
+                T.Normalize(
+                    mean=torch.tensor(IMAGENET_DEFAULT_MEAN), std=torch.tensor(IMAGENET_DEFAULT_STD)
+                ),
+            ]
+        )
     return transforms

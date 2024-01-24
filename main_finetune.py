@@ -20,7 +20,7 @@ from timm.utils import AverageMeter, accuracy
 from torchmetrics import AveragePrecision
 
 from config import get_config
-from data import build_loader
+from data import build_loader, build_test_loader
 from logger import create_logger
 from lr_scheduler import build_scheduler
 from main_teacher import init_dist_slurm
@@ -85,15 +85,15 @@ def parse_option():
         default="output",
         type=str,
         metavar="PATH",
-        help="root of output folder, the full path is <output>/<model_name>/<tag> (default: output)",
+        help="output folder, the full path is <output>/<model_name>/<tag> (default: output)",
     )
     parser.add_argument("--tag", help="tag of experiment")
     parser.add_argument("--eval", action="store_true", help="Perform evaluation only")
+    parser.add_argument("--test", action="store_true", help="Perform test only")
     parser.add_argument("--throughput", action="store_true", help="Test throughput only")
     parser.add_argument("--train_frac", type=float, default=1.0, help="fraction of training data")
-
-    # distributed training
-    # parser.add_argument("--local_rank", type=int, required=True, help='local rank for DistributedDataParallel')
+    parser.add_argument("--launcher", type=str, default="slurm", help="The job launcer")
+    parser.add_argument("--master_port", type=str, default="12365", help="The master port")
 
     args = parser.parse_args()
 
@@ -126,7 +126,7 @@ def main(config):
 
     lr_scheduler = build_scheduler(config, optimizer, len(data_loader_train))
 
-    if "bigearthnet" in config.DATA.DATA_PATH:
+    if "bigearthnet" in config.DATA.DATA_PATH.lower():
         criterion = torch.nn.MultiLabelSoftMarginLoss()
     elif config.AUG.MIXUP > 0.0:
         # smoothing is handled with mixup label transform
@@ -155,18 +155,26 @@ def main(config):
     if config.MODEL.RESUME:
         max_accuracy = load_checkpoint(config, model_without_ddp, optimizer, lr_scheduler, logger)
         acc1, acc5, loss = validate(config, data_loader_val, model)
-        logger.info(f"Accuracy of the network on the {len(dataset_val)} test images: {acc1:.1f}%")
+        logger.info(f"Accuracy of the network on the {len(dataset_val)} val images: {acc1:.1f}%")
         if config.EVAL_MODE:
             return
     elif config.PRETRAINED:
         load_pretrained(config, model_without_ddp, logger)
         acc1, acc5, loss = validate(config, data_loader_val, model)
         logger.info(
-            f"Accuracy of the pretrained network on the {len(dataset_val)} test images: {acc1:.1f}%"
+            f"Accuracy of the pretrained network on the {len(dataset_val)} val images: {acc1:.1f}%"
         )
 
     if config.THROUGHPUT_MODE:
         throughput(data_loader_val, model, logger)
+        return
+
+    if config.TEST_MODE:
+        data_loader_test, _ = build_test_loader(config, logger)
+        acc1, acc5, loss = validate(config, data_loader_test, model)
+        print("*" * 119)
+        logger.info(f"Accuracy of the network on the {len(dataset_val)} test images: {acc1:.1f}%")
+        print("*" * 119)
         return
 
     logger.info("Start training")
@@ -178,7 +186,7 @@ def main(config):
             config, model, criterion, data_loader_train, optimizer, epoch, mixup_fn, lr_scheduler
         )
         acc1, acc5, loss = validate(config, data_loader_val, model)
-        logger.info(f"Accuracy of the network on the {len(dataset_val)} test images: {acc1:.1f}%")
+        logger.info(f"Accuracy of the network on the {len(dataset_val)} val images: {acc1:.1f}%")
         if dist.get_rank() == 0 and (acc1 > max_accuracy):
             save_checkpoint(
                 config, "max", model_without_ddp, max_accuracy, optimizer, lr_scheduler, logger
@@ -289,7 +297,7 @@ def train_one_epoch(
 
 @torch.no_grad()
 def validate(config, data_loader, model):
-    if "bigearthnet" in config.DATA.DATA_PATH:
+    if "bigearthnet" in config.DATA.DATA_PATH.lower():
         criterion = torch.nn.MultiLabelSoftMarginLoss()
         average_precision = AveragePrecision(
             num_classes=config.MODEL.NUM_CLASSES, average="micro", pos_label=1, task="binary"
@@ -313,7 +321,7 @@ def validate(config, data_loader, model):
 
         # measure accuracy and record loss
         loss = criterion(output, target)
-        if "bigearthnet" in config.DATA.DATA_PATH:
+        if "bigearthnet" in config.DATA.DATA_PATH.lower():
             acc1 = acc5 = average_precision(output, target) * 100
         else:
             acc1, acc5 = accuracy(output, target, topk=(1, 5))
@@ -370,19 +378,8 @@ if __name__ == "__main__":
     if config.AMP_OPT_LEVEL != "O0":
         assert amp is not None, "amp not installed!"
 
-    # find free port and save it to master_port.tmp
-    port = "12365"
-    # with open("master_port.tmp", "r+", encoding="UTF-8") as fp:
-    #     port = fp.readline().strip()
-    #     if port == "":
-    #         port = _find_free_port()
-    #         fp.write(str(port))
-    # # TODO: remove print
-    # print("*" * 100)
-    # print(port)
-
     # currently supported launchers: slurm
-    init_dist_slurm(backend="nccl", port=port)
+    init_dist_slurm(backend="nccl", port=config.MASTER_PORT)
 
     seed = config.SEED + dist.get_rank()
     torch.manual_seed(seed)

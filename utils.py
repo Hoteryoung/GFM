@@ -38,6 +38,7 @@ def load_checkpoint(config, model, optimizer, lr_scheduler, logger):
         optimizer.load_state_dict(checkpoint["optimizer"])
         lr_scheduler.load_state_dict(checkpoint["lr_scheduler"])
         config.defrost()
+        checkpoint["epoch"] = 99 if checkpoint["epoch"] == "max" else checkpoint["epoch"]
         config.TRAIN.START_EPOCH = checkpoint["epoch"] + 1
         config.freeze()
         if (
@@ -328,9 +329,9 @@ def remap_pretrained_keys_vit(model, checkpoint_model, logger):
         num_layers = model.get_num_layers()
         rel_pos_bias = checkpoint_model["rel_pos_bias.relative_position_bias_table"]
         for i in range(num_layers):
-            checkpoint_model[
-                "blocks.%d.attn.relative_position_bias_table" % i
-            ] = rel_pos_bias.clone()
+            checkpoint_model["blocks.%d.attn.relative_position_bias_table" % i] = (
+                rel_pos_bias.clone()
+            )
         checkpoint_model.pop("rel_pos_bias.relative_position_bias_table")
 
     # Geometric interpolation when pre-trained patch size mismatch with fine-tuned patch size

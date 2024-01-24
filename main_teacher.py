@@ -83,6 +83,7 @@ def parse_option():
     parser.add_argument("--tag", help="tag of experiment")
     parser.add_argument("--alpha", type=float, default=1.0, help="Alpha for similarity loss")
     parser.add_argument("--launcher", type=str, default="slurm", help="The job launcer")
+    parser.add_argument("--master_port", type=str, default="12365", help="The master port")
 
     args = parser.parse_args()
 
@@ -298,19 +299,8 @@ if __name__ == "__main__":
     if config.AMP_OPT_LEVEL != "O0":
         assert amp is not None, "amp not installed!"
 
-    # find free port and save it to master_port.tmp
-    port = "12365"
-    # with open("master_port.tmp", "r+", encoding="UTF-8") as fp:
-    #     port = fp.readline().strip()
-    #     if port == "":
-    #         port = _find_free_port()
-    #         fp.write(str(port))
-    # # TODO: remove print
-    # print("*" * 100)
-    # print(port)
-
     # currently supported launchers: slurm
-    init_dist_slurm(backend="nccl", port=port)
+    init_dist_slurm(backend="nccl", port=config.MASTER_PORT)
 
     seed = config.SEED + dist.get_rank()
     torch.manual_seed(seed)
